@@ -11,6 +11,7 @@
 # shellcheck disable=SC2086
 
 set -e
+set -x
 
 umask 002
 OPENNMS_HOME="/opt/opennms"
@@ -22,6 +23,26 @@ OPENNMS_OVERLAY_JETTY_WEBINF="/opt/opennms-jetty-webinf-overlay"
 # Error codes
 E_ILLEGAL_ARGS=126
 E_INIT_CONFIG=127
+
+MYID="$(id -u)"
+MYUSER="$(getent passwd "${MYID}" | cut -d: -f1)"
+
+SUDO=()
+COPY=("cp" "-r")
+RSYNC=("rsync" "-K" "-rl")
+
+if [ "$MYID" -eq 0 ]; then
+  MYUSER=opennms
+  SUDO=("sudo" "-u" "${MYUSER}")
+  COPY=("${RSYNC[@]}" "--chmod=ug+rw" "--chown=${MYUSER}")
+fi
+
+export RUNAS="${MYUSER}"
+
+if [ "$MYID" -eq 0 ]; then
+  echo "RUNAS=${MYUSER}" >> /opt/opennms/etc/opennms.conf
+  chown "$MYUSER" /opt/opennms/etc/opennms.conf
+fi
 
 # Help function used in error messages and -h option
 usage() {
@@ -36,6 +57,7 @@ usage() {
   echo "-f: Start OpenNMS in foreground with existing data and configuration."
   echo "-h: Show this help."
   echo "-i: Initialize or update database and configuration files and do *NOT* start."
+  echo "-p: Attempt to fix permissions on overlaid/mounted filesystems."
   echo "-s: Initialize or update database and configuration files and start OpenNMS."
   echo "-t: Run the config-tester, e.g -t -h to show help and available options."
   echo ""
@@ -46,13 +68,16 @@ initOrUpdate() {
     echo "System is already configured. Enforce init or update by delete the ${OPENNMS_HOME}/etc/configured file."
   else
     echo "Find and set Java environment for running OpenNMS in ${OPENNMS_HOME}/etc/java.conf."
+    "${SUDO[@]}" \
     "${OPENNMS_HOME}"/bin/runjava -s
 
     echo "Run OpenNMS install command to initialize or upgrade the database schema and configurations."
+    "${SUDO[@]}" \
     ${JAVA_HOME}/bin/java -Dopennms.home="${OPENNMS_HOME}" -Dlog4j.configurationFile="${OPENNMS_HOME}"/etc/log4j2-tools.xml -cp "${OPENNMS_HOME}/lib/opennms_bootstrap.jar" org.opennms.bootstrap.InstallerBootstrap "${@}" || exit ${E_INIT_CONFIG}
 
     # If Newts is used initialize the keyspace with a given REPLICATION_FACTOR which defaults to 1 if unset
     if [[ "${OPENNMS_TIMESERIES_STRATEGY}" == "newts" ]]; then
+      "${SUDO[@]}" \
       ${JAVA_HOME}/bin/java -Dopennms.manager.class="org.opennms.netmgt.newts.cli.Newts" -Dopennms.home="${OPENNMS_HOME}" -Dlog4j.configurationFile="${OPENNMS_HOME}"/etc/log4j2-tools.xml -jar ${OPENNMS_HOME}/lib/opennms_bootstrap.jar init -r ${REPLICATION_FACTOR-1} || exit ${E_INIT_CONFIG}
     else
       echo "The time series strategy ${OPENNMS_TIMESERIES_STRATEGY} is selected, skip Newts keyspace initialisation. If unset defaults to rrd to use RRDTool."
@@ -62,12 +87,22 @@ initOrUpdate() {
 
 configTester() {
   echo "Run config tester to validate existing configuration files."
+  "${SUDO[@]}" \
   ${JAVA_HOME}/bin/java -Dopennms.manager.class="org.opennms.netmgt.config.tester.ConfigTester" -Dopennms.home="${OPENNMS_HOME}" -Dlog4j.configurationFile="${OPENNMS_HOME}"/etc/log4j2-tools.xml -jar ${OPENNMS_HOME}/lib/opennms_bootstrap.jar "${@}" || exit ${E_INIT_CONFIG}
 }
 
 processConfdTemplates() {
   echo "Processing confd templates using /etc/confd/confd.toml"
+  "${SUDO[@]}" \
   confd -onetime
+}
+
+makePath() {
+  _dir="$1"
+  if ! "${SUDO[@]}" mkdir "${_dir}" 2>/dev/null; then
+    mkdir "${_dir}"
+    chown "$MYID" "${_dir}"
+  fi
 }
 
 # Initialize database and configure Karaf
@@ -77,28 +112,30 @@ initConfigWhenEmpty() {
     exit ${E_ILLEGAL_ARGS}
   fi
 
+  ls -la /opt/opennms /opennms-data
+
   if [ ! "$(ls --ignore .git --ignore .gitignore -A ${OPENNMS_HOME}/etc)"  ]; then
     echo "No existing configuration in ${OPENNMS_HOME}/etc found. Initialize from etc-pristine."
-    cp -r ${OPENNMS_HOME}/share/etc-pristine/* ${OPENNMS_HOME}/etc/ || exit ${E_INIT_CONFIG}
+    "${COPY[@]}" ${OPENNMS_HOME}/share/etc-pristine/* ${OPENNMS_HOME}/etc/ || exit ${E_INIT_CONFIG}
   fi
 
   if [[ ! -d /opennms-data/mibs ]]; then
     echo "Mibs data directory does not exist, create directory in /opennms-data/mibs"
-    mkdir /opennms-data/mibs || exit ${E_INIT_CONFIG}
+    makePath /opennms-data/mibs || exit ${E_INIT_CONFIG}
   else
     echo "Use existing Mibs data directory."
   fi
 
   if [[ ! -d /opennms-data/reports ]]; then
     echo "Reports data directory does not exist, create directory in /opennms-data/reports"
-    mkdir /opennms-data/reports || exit ${E_INIT_CONFIG}
+    makePath /opennms-data/reports || exit ${E_INIT_CONFIG}
   else
     echo "Use existing Reports data directory."
   fi
 
   if [[ ! -d /opennms-data/rrd ]]; then
     echo "RRD data directory does not exist, create directory in /opennms-data/rrd"
-    mkdir /opennms-data/rrd || exit ${E_INIT_CONFIG}
+    makePath /opennms-data/rrd || exit ${E_INIT_CONFIG}
   else
     echo "Use existing RRD data directory."
   fi
@@ -109,7 +146,7 @@ applyOverlayConfig() {
   if [ -d "${OPENNMS_OVERLAY}" ] && [ -n "$(ls -A ${OPENNMS_OVERLAY})" ]; then
     echo "Apply custom configuration from ${OPENNMS_OVERLAY}."
     # Use rsync so that we can overlay files into directories that are symlinked
-    rsync -K -rl ${OPENNMS_OVERLAY}/* ${OPENNMS_HOME}/ || exit ${E_INIT_CONFIG}
+    "${RSYNC[@]}" ${OPENNMS_OVERLAY}/* ${OPENNMS_HOME}/ || exit ${E_INIT_CONFIG}
   else
     echo "No custom config found in ${OPENNMS_OVERLAY}. Use default configuration."
   fi
@@ -117,7 +154,7 @@ applyOverlayConfig() {
   # Overlay etc specific config
   if [ -d "${OPENNMS_OVERLAY_ETC}" ] && [ -n "$(ls -A ${OPENNMS_OVERLAY_ETC})" ]; then
     echo "Apply custom etc configuration from ${OPENNMS_OVERLAY_ETC}."
-    cp -r ${OPENNMS_OVERLAY_ETC}/* ${OPENNMS_HOME}/etc || exit ${E_INIT_CONFIG}
+    "${COPY[@]}" ${OPENNMS_OVERLAY_ETC}/* ${OPENNMS_HOME}/etc/ || exit ${E_INIT_CONFIG}
   else
     echo "No custom config found in ${OPENNMS_OVERLAY_ETC}. Use default configuration."
   fi
@@ -125,9 +162,20 @@ applyOverlayConfig() {
   # Overlay jetty specific config
   if [ -d "${OPENNMS_OVERLAY_JETTY_WEBINF}" ] && [ -n "$(ls -A ${OPENNMS_OVERLAY_JETTY_WEBINF})" ]; then
     echo "Apply custom Jetty WEB-INF configuration from ${OPENNMS_OVERLAY_JETTY_WEBINF}."
-    cp -r ${OPENNMS_OVERLAY_JETTY_WEBINF}/* ${OPENNMS_HOME}/jetty-webapps/opennms/WEB-INF || exit ${E_INIT_CONFIG}
+    "${COPY[@]}" ${OPENNMS_OVERLAY_JETTY_WEBINF}/* ${OPENNMS_HOME}/jetty-webapps/opennms/WEB-INF/ || exit ${E_INIT_CONFIG}
   else
     echo "No custom Jetty WEB-INF config found in ${OPENNMS_OVERLAY_JETTY_WEBINF}. Use default configuration."
+  fi
+}
+
+fixPermissions() {
+  if [ "$MYID" -eq 0 ]; then
+    echo "Fixing permissions."
+    /opt/opennms/bin/fix-permissions -R /opennms-data
+    /opt/opennms/bin/fix-permissions -R /opennms-data/*
+    /opt/opennms/bin/fix-permissions /opt/opennms
+  else
+    echo "Skipping permission scripts."
   fi
 }
 
@@ -146,7 +194,7 @@ start() {
   -Djava.io.tmpdir=/opt/opennms/data/tmp
   -Djava.locale.providers=CLDR,COMPAT
   -XX:+StartAttachListener"
-  exec ${JAVA_HOME}/bin/java ${OPENNMS_JAVA_OPTS} ${JAVA_OPTS} -jar /opt/opennms/lib/opennms_bootstrap.jar start
+  exec "${SUDO[@]}" ${JAVA_HOME}/bin/java ${OPENNMS_JAVA_OPTS} ${JAVA_OPTS} -jar /opt/opennms/lib/opennms_bootstrap.jar start
 }
 
 # Evaluate arguments for build script.
@@ -156,11 +204,12 @@ if [[ "${#}" == 0 ]]; then
 fi
 
 # Evaluate arguments for build script.
-while getopts "fhist" flag; do
+while getopts "fhipst" flag; do
   case ${flag} in
     f)
       processConfdTemplates
       applyOverlayConfig
+      fixPermissions
       configTester -a
       start
       exit
@@ -173,14 +222,23 @@ while getopts "fhist" flag; do
       initConfigWhenEmpty
       processConfdTemplates
       applyOverlayConfig
+      fixPermissions
       configTester -a
       initOrUpdate -dis
+      exit
+      ;;
+    p)
+      processConfdTemplates
+      applyOverlayConfig
+      fixPermissions
+      find -L "${OPENNMS_HOME}" -ls | sort -u
       exit
       ;;
     s)
       initConfigWhenEmpty
       processConfdTemplates
       applyOverlayConfig
+      fixPermissions
       configTester -a
       initOrUpdate -dis
       start

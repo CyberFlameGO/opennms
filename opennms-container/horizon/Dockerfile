@@ -6,7 +6,7 @@ ARG BASE_IMAGE_VERSION="11.0.9.11-b5706"
 
 FROM ${BASE_IMAGE}:${BASE_IMAGE_VERSION} as horizon-base
 
-ARG REQUIRED_RPMS="rrdtool jrrd2 jicmp jicmp6 R-core rsync perl-XML-Twig perl-libwww-perl jq diffutils"
+ARG REQUIRED_RPMS="rrdtool jrrd2 jicmp jicmp6 R-core rsync perl-XML-Twig perl-libwww-perl jq diffutils sudo"
 
 ARG REPO_KEY_URL="https://yum.opennms.org/OPENNMS-GPG-KEY"
 ARG REPO_RPM="https://yum.opennms.org/repofiles/opennms-repo-stable-rhel8.noarch.rpm"
@@ -71,7 +71,7 @@ RUN echo "installing packages for build ${REVISION} (${BUILD_DATE})"; \
     if [[ "$(ls -1 /tmp/tarball/*.tar.gz 2>/dev/null | wc -l)" != 0 ]]; then \
         mkdir -p /opt/opennms && \
         tar -xzf /tmp/tarball/opennms-*.tar.gz -C /opt/opennms && \
-        chown -R 0:0 /opt/opennms && \
+        chown -R 10001:0 /opt/opennms && \
         cp -r /opt/opennms/etc /opt/opennms/share/etc-pristine; \
     elif [[ "$(ls -1 /tmp/rpms/*.rpm 2>/dev/null | wc -l)" != 0 ]]; then \
         echo "installing local RPMs from filesystem" && \
@@ -114,10 +114,10 @@ RUN echo "installing packages for build ${REVISION} (${BUILD_DATE})"; \
     ln -s /opennms-data/reports /opt/opennms/share/reports && \
     ln -s /opennms-data/mibs /opt/opennms/share/mibs && \
     chown 10001:10001 -R /opt/opennms \
-                         /opennms-data \
-                         /opt/opennms-overlay \
-                         /opt/opennms-etc-overlay \
-                         /opt/opennms-jetty-webinf-overlay && \
+                     /opennms-data \
+                     /opt/opennms-overlay \
+                     /opt/opennms-etc-overlay \
+                     /opt/opennms-jetty-webinf-overlay && \
     chgrp -R 0 /opt/opennms \
                /opennms-data \
                /opt/opennms-overlay \
@@ -127,7 +127,8 @@ RUN echo "installing packages for build ${REVISION} (${BUILD_DATE})"; \
                  /opennms-data \
                  /opt/opennms-overlay \
                  /opt/opennms-etc-overlay \
-                 /opt/opennms-jetty-webinf-overlay
+                 /opt/opennms-jetty-webinf-overlay && \
+    ls -la /opt/opennms
 
 # Add templates replaced at runtime and entrypoint
 COPY --chown=10001:0 ./container-fs/confd /etc/confd
