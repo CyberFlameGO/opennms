@@ -110,6 +110,12 @@ You can set the following properties:
 | optional
 | `5`
 
+| bulkSize
+| Number of flow documents to collect into a bulk operation before commiting.
+  This is per thread. Set to `0` to disable bulking.
+| optional
+| `1000`
+
 | settings.index.number_of_shards
 | The number of primary shards that an index should have.
   Refer to link:https://www.elastic.co/guide/en/elasticsearch/reference/current/index-modules.html#index-modules-setting[Elasticsearch Reference -> Index Modules] for more details.
