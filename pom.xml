@@ -1337,7 +1337,7 @@
     <atomikosVersion>3.9.2</atomikosVersion>
     <awsSqsMessagingVersion>1.0.4</awsSqsMessagingVersion>
     <awsSdkVersion>1.11.218</awsSdkVersion>
-    <batikVersion>1.7</batikVersion>
+    <batikVersion>1.17</batikVersion>
     <bouncyCastleVersion>1.68</bouncyCastleVersion>
     <bsfVersion>2.4.0</bsfVersion>
     <bsonVersion>3.5.0</bsonVersion>
